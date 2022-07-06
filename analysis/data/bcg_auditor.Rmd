@@ -1,0 +1,97 @@
+---
+output: 
+  html_document:
+     fig_caption: true
+     toc: true
+     toc_depth: 3
+     toc_float: true
+params:
+  cats_path: "/Volumes/GoogleDrive/Shared drives/CATS/"
+  deployid: "bb190226-53"
+title: "`r paste('BCG audit: ', params$deployid)`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_knit$set(eval.after = "fig.cap") 
+library(cetaceanbcg)
+library(lubridate)
+library(tidyverse)
+source("bcg_auditor_util.R")
+```
+
+## Load data
+
+```{r locate_data}
+prh_path <- find_prh(params$cats_path, params$deployid)
+phase3_path <- here::here("analysis/data/raw_data/",
+                          paste0(params$deployid, ".csv"))
+acc400_path <- here::here("analysis/data/raw_data/400hz",
+                          paste0(params$deployid, "_400hz.csv"))
+stopifnot(file.exists(phase3_path),
+          file.exists(acc400_path))
+```
+
+### Locate data
+
+Data files are located at:
+
+* `r prh_path`
+* `r phase3_path`
+* `r acc400_path`
+
+### Check alignment
+
+```{r load_data}
+prh <- catsr::read_nc(prh_path)
+phase3 <- readr::read_csv(phase3_path, show_col_types = FALSE) %>%
+  mutate(across(c(motionlessstart, motionlessend),
+                ~ ymd_hms(.x, tz = attr(prh, "tz"))))
+acc400 <- readr::read_csv(acc400_path,
+                          col_names = c("dn", "surge", "sway", "heave"),
+                          col_types = "dddd") %>%
+  mutate(dt = dn_to_posix(dn, tz = attr(prh, "tz")))
+```
+
+```{r data_summary, fig.asp=0.25, fig.cap=glue::glue("Alignment of PRH, 400 Hz acceleration, and Phase III audit. There were {phase3_summ$n} motionless periods totalling {phase3_summ$total_min} minutes.")}
+prh_summ <- summarize(prh, begin = min(dt), end = max(dt), which = "prh")
+
+phase3_summ <- summarize(
+  phase3, 
+  begin = min(motionlessstart), 
+  end = max(motionlessend),
+  n = n(),
+  total_min = round(sum(as.numeric(motionlessend - motionlessstart, unit = "mins"))),
+  which = "phase3"
+)
+
+acc400_summ <- summarize(acc400, 
+                         begin = min(dt), 
+                         end = max(dt), 
+                         which = "acc400")
+
+list(prh_summ, 
+     acc400_summ, 
+     transmute(phase3, 
+               begin = motionlessstart, 
+               end = motionlessend, 
+               which = "phase3")) %>% 
+  bind_rows() %>% 
+  mutate(which = factor(which, levels = c("prh", "acc400", "phase3"))) %>% 
+  ggplot(aes(x = begin, xend = end, y = which, yend = which, color = which)) +
+  geom_segment() +
+  scale_x_datetime(date_labels = "%Y-%m-%d\n%H:%M %Z") +
+  theme_classic() +
+  theme(aspect.ratio = 1/4,
+        axis.title = element_blank(),
+        axis.text.x = element_text(angle = 30, hjust = 1),
+        legend.position = "none")
+```
+
+## Audit motionless periods
+
+```{r make_bcg}
+bcg <- make_bcg(acc400, phase3)
+
+```
+
